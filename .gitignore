@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Library crates conventionally do not commit Cargo.lock
+Cargo.lock
+
+# proptest failure seed files (generated on property-test failure)
+proptest-regressions/
+
+# editor/OS
+*.swp
+*~
+.DS_Store
