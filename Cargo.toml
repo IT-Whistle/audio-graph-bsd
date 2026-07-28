@@ -24,3 +24,8 @@ thiserror = "2.0"
 # Tests/examples/doctests name audio_core directly; it is also a regular dep.
 audio-core = { path = "../audio-core" }
 proptest = "1.11.0"
+criterion = "0.5"
+
+[[bench]]
+name = "process_cycle_latency"
+harness = false
