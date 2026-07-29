@@ -7,7 +7,7 @@
 //! documented on [`RingSink`] (the `push` path clones, so it is deferred to a
 //! non-RT [`RingSink::flush`]).
 
-use audio_core::{
+use audio_core_bsd::{
     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 };
 
@@ -212,7 +212,7 @@ impl AudioNode for RingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_core::{AudioNode, PortDirection, ProcessContext};
+    use audio_core_bsd::{AudioNode, PortDirection, ProcessContext};
 
     /// Approximate float equality (uses `<`, never `==`).
     fn approx_eq(a: f32, b: f32) -> bool {

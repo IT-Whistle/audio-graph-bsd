@@ -1,7 +1,7 @@
 //! Real-time-safe directed node-graph audio processing engine for Rust.
 //!
 //! `audio-graph` schedules and drives a directed acyclic graph (DAG) of
-//! [`AudioNode`][audio_core::AudioNode]s on a dedicated real-time (RT) audio
+//! [`AudioNode`][audio_core_bsd::AudioNode]s on a dedicated real-time (RT) audio
 //! thread. The engine performs topological sorting at compile time, pre-allocates
 //! every scratch buffer, and then runs [`Graph::process_cycle`] over the
 //! pre-scheduled order without ever allocating, locking, or panicking.
@@ -12,7 +12,7 @@
 //!    and wires output ports to input ports with [`Graph::link`].
 //! 2. **Compile phase** (non-RT): [`Graph::compile`] runs Kahn's topological
 //!    sort, rejects cycles, fixes the execution order, and pre-allocates a
-//!    per-port scratch [`AudioFrame`][audio_core::AudioFrame] for every node.
+//!    per-port scratch [`AudioFrame`][audio_core_bsd::AudioFrame] for every node.
 //! 3. **RT phase**: [`Graph::process_cycle`] is invoked once per audio cycle
 //!    on the RT thread. It copies upstream outputs into downstream inputs
 //!    (bounded, alloc-free) and calls each node's `process` in dependency order.
@@ -37,10 +37,10 @@
 //! scales it by 0.5:
 //!
 //! ```
-//! use audio_core::{
+//! use audio_core_bsd::{
 //!     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 //! };
-//! use audio_graph::{Graph, GraphConfig};
+//! use audio_graph_bsd::{Graph, GraphConfig};
 //!
 //! /// A source node with one output and a no-op `process`: its output scratch
 //! /// is seeded externally via `Graph::feed` and left untouched each cycle.

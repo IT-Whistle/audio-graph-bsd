@@ -18,5 +18,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RingSource` / `RingSink` rtrb-backed bridge nodes for worker-thread I/O.
 - Comprehensive test suite: unit, property (proptest), integration, RT-safety (alloc-free over 1000 cycles), and concurrency.
 
-[Unreleased]: https://github.com/IT-Whistle/audio-graph/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/IT-Whistle/audio-graph/releases/tag/v0.1.0
+[Unreleased]: https://github.com/IT-Whistle/audio-graph-bsd/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.1.0

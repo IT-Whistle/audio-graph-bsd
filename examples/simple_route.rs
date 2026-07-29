@@ -2,8 +2,8 @@
 //!
 //! Builds a single-route graph `Source -> Gain(0.5)`, compiles it, then streams
 //! a 440 Hz sine through three cycles. On each cycle the source's output port
-//! is re-seeded via [`audio_graph::Graph::feed`], the engine runs one
-//! [`audio_graph::Graph::process_cycle`], and the gain node's output is read
+//! is re-seeded via [`audio_graph_bsd::Graph::feed`], the engine runs one
+//! [`audio_graph_bsd::Graph::process_cycle`], and the gain node's output is read
 //! back and printed next to its input to confirm `output == input * gain`.
 //!
 //! Run with:
@@ -12,10 +12,10 @@
 //! cargo run --example simple_route
 //! ```
 
-use audio_core::{
+use audio_core_bsd::{
     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 };
-use audio_graph::{Graph, GraphConfig};
+use audio_graph_bsd::{Graph, GraphConfig};
 
 /// A source node: zero inputs, one mono output, no-op `process`.
 ///

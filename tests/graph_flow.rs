@@ -11,8 +11,8 @@
 //! They also cover multi-channel (stereo) frame consistency and diamond
 //! fan-out / fan-in topology.
 
-use audio_core::{AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat};
-use audio_graph::{Graph, GraphConfig};
+use audio_core_bsd::{AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat};
+use audio_graph_bsd::{Graph, GraphConfig};
 
 // ---------------------------------------------------------------------------
 // Local test-only AudioNode implementations.

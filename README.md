@@ -1,10 +1,10 @@
-# audio-graph
+# audio-graph-bsd
 
 [![License: BSD-2-Clause](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](./LICENSE)
-[![Crates.io](https://img.shields.io/crates/v/audio-graph.svg)](https://crates.io/crates/audio-graph)
+[![Crates.io](https://img.shields.io/crates/v/audio-graph-bsd.svg)](https://crates.io/crates/audio-graph-bsd)
 
 Real-time-safe directed node-graph audio processing engine — schedules
-[`AudioNode`][audio-core]s in topological order, pre-allocates every scratch
+[`AudioNode`][audio-core-bsd]s in topological order, pre-allocates every scratch
 buffer at compile time, and runs an allocation-free
 [`process_cycle`](Graph::process_cycle) on the RT thread.
 
@@ -14,7 +14,7 @@ buffer at compile time, and runs an allocation-free
 ## Role
 
 This crate is a standalone graph engine that depends on
-[`audio-core`](https://crates.io/crates/audio-core) for the node contract
+[`audio-core-bsd`](https://crates.io/crates/audio-core-bsd) for the node contract
 (`AudioNode`, `AudioFrame`, `ProcessContext`, `PortDescriptor`). It provides:
 
 - A **directed acyclic graph** of `AudioNode`s wired output-port → input-port.
@@ -50,7 +50,7 @@ The graph moves through three phases:
 
 | Dependency | Version | Purpose |
 |------------|---------|---------|
-| `audio-core` | 0.1.0 | `AudioNode` / `AudioFrame` / `ProcessContext` / `PortDescriptor` contract. |
+| `audio-core-bsd` | 0.1.0 | `AudioNode` / `AudioFrame` / `ProcessContext` / `PortDescriptor` contract. |
 | `rtrb` | 0.3 | Lock-free ring buffer backing `RingSource` / `RingSink`. |
 | `thiserror` | 2.0 | `GraphError` derive. |
 
@@ -73,10 +73,10 @@ no-op node whose output scratch is seeded via [`Graph::feed`]; the gain node
 scales it by 0.5:
 
 ```rust
-use audio_core::{
+use audio_core_bsd::{
     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 };
-use audio_graph::{Graph, GraphConfig};
+use audio_graph_bsd::{Graph, GraphConfig};
 
 // A source node: one mono output, no-op `process` (its output scratch is seeded
 // externally via `Graph::feed` and left untouched each cycle).

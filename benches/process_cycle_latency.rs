@@ -12,8 +12,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use audio_core::{AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat};
-use audio_graph::{Graph, GraphConfig};
+use audio_core_bsd::{AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat};
+use audio_graph_bsd::{Graph, GraphConfig};
 
 // ---------------------------------------------------------------------------
 // Minimal test nodes (benches are a separate crate, same as integration tests).

@@ -5,17 +5,17 @@
 //! `Producer`; the main thread drives a `RingSource`-fronted graph in a
 //! `process_cycle` loop, popping and verifying every frame arrives intact.
 //! This exercises the cross-thread lock-free contract described in
-//! [`audio_graph::RingSource`].
+//! [`audio_graph_bsd::RingSource`].
 //!
 //! The test is deterministic: a bounded frame count and a join on the worker
 //! thread make it flake-free.
 
 use std::thread;
 
-use audio_core::{
+use audio_core_bsd::{
     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 };
-use audio_graph::{Graph, GraphConfig};
+use audio_graph_bsd::{Graph, GraphConfig};
 
 /// Each produced frame is filled with a unique sentinel value so that
 /// corruption or reordering is detectable.
@@ -50,7 +50,7 @@ fn ring_buffer_producer_consumer_across_threads() {
     // Main thread: build a minimal graph (RingSource → identity GainNode) and
     // drain frames via process_cycle.
     let mut g = Graph::new();
-    let rsrc = g.add_node(Box::new(audio_graph::RingSource::new(
+    let rsrc = g.add_node(Box::new(audio_graph_bsd::RingSource::new(
         consumer, 1, 48_000, FRAME_SIZE,
     )));
 

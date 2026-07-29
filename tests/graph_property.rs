@@ -8,8 +8,8 @@
 //! 2. **Pass-through identity** — a `src → pass → pass` chain preserves an
 //!    arbitrary signal exactly (within float epsilon).
 
-use audio_core::{AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat};
-use audio_graph::{Graph, GraphConfig};
+use audio_core_bsd::{AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat};
+use audio_graph_bsd::{Graph, GraphConfig};
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------

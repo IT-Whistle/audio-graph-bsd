@@ -1,12 +1,12 @@
 [package]
-name = "audio-graph"
+name = "audio-graph-bsd"
 version = "0.1.0"
 edition = "2021"
 license = "BSD-2-Clause"
 rust-version = "1.85"
-description = "Real-time-safe directed node-graph audio processing engine for Rust (topological scheduling, alloc-free process_cycle, rtrb bridge)"
-repository = "https://github.com/IT-Whistle/audio-graph"
-keywords = ["audio", "dsp", "real-time", "graph", "node"]
+description = "Real-time-safe directed node-graph audio processing engine for Rust (topological scheduling, alloc-free process_cycle, rtrb bridge) — FreeBSD-oriented"
+repository = "https://github.com/IT-Whistle/audio-graph-bsd"
+keywords = ["audio", "freebsd", "real-time", "graph", "dsp"]
 categories = ["multimedia::audio"]
 publish = true
 
@@ -16,13 +16,13 @@ targets = ["x86_64-unknown-freebsd", "x86_64-unknown-linux-gnu"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-audio-core = { version = "0.1.0", path = "../audio-core" }
+audio-core-bsd = { version = "0.1.0", path = "../audio-core-bsd" }
 rtrb = "0.3"
 thiserror = "2.0"
 
 [dev-dependencies]
-# Tests/examples/doctests name audio_core directly; it is also a regular dep.
-audio-core = { path = "../audio-core" }
+# Tests/examples/doctests name audio_core_bsd directly; it is also a regular dep.
+audio-core-bsd = { path = "../audio-core-bsd" }
 proptest = "1.11.0"
 criterion = "0.5"
 

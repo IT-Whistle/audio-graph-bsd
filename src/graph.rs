@@ -1,20 +1,20 @@
 //! The real-time-safe audio graph engine.
 //!
-//! [`Graph`] owns a set of [`AudioNode`](audio_core::AudioNode) trait objects,
+//! [`Graph`] owns a set of [`AudioNode`](audio_core_bsd::AudioNode) trait objects,
 //! the directed edges between their ports, and the pre-allocated scratch frames
 //! used to shuttle audio between nodes on the real-time thread. The compile /
 //! build phases allocate freely; [`Graph::process_cycle`] does not.
 
 use crate::error::GraphError;
 use crate::topology::{topological_sort, Edge};
-use audio_core::{AudioFrame, AudioNode, PortDirection, ProcessContext};
+use audio_core_bsd::{AudioFrame, AudioNode, PortDirection, ProcessContext};
 
 /// Identifier of a node within a [`Graph`]. Stable for the lifetime of the graph.
 pub type NodeId = usize;
 
 /// Index of a port on a node, in the order reported by the node's
-/// [`inputs`](audio_core::AudioNode::inputs) /
-/// [`outputs`](audio_core::AudioNode::outputs).
+/// [`inputs`](audio_core_bsd::AudioNode::inputs) /
+/// [`outputs`](audio_core_bsd::AudioNode::outputs).
 pub type PortIdx = usize;
 
 /// Identifier of a link returned by [`Graph::link`]. Equal to the link's
@@ -222,7 +222,7 @@ impl Graph {
     /// For each node in dependency order this copies connected upstream outputs
     /// into the node's input scratch (or zeroes unconnected inputs), then
     /// invokes the node's
-    /// [`process`](audio_core::AudioNode::process). The whole pass is bounded
+    /// [`process`](audio_core_bsd::AudioNode::process). The whole pass is bounded
     /// and allocation-free: every slice is pre-sized by [`Graph::compile`] and
     /// only bounded `for` loops / slice copies are used.
     ///
@@ -369,7 +369,7 @@ impl Default for Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_core::{
+    use audio_core_bsd::{
         AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
     };
 
