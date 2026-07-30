@@ -25,9 +25,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use audio_core_bsd::{
-    AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat,
-};
+use audio_core_bsd::{AudioFrame, AudioNode, PortDescriptor, ProcessContext, SampleFormat};
 use audio_graph_bsd::{Graph, GraphConfig};
 
 // ---------------------------------------------------------------------------
@@ -187,7 +185,9 @@ fn process_cycle_is_alloc_free_across_1000_cycles() {
             cons_in, 1, 48_000, N,
         )));
         let gain = g.add_node(Box::new(GainNode::new(1.0)));
-        let rsink = g.add_node(Box::new(audio_graph_bsd::RingSink::new(prod_out, 1, 48_000, N)));
+        let rsink = g.add_node(Box::new(audio_graph_bsd::RingSink::new(
+            prod_out, 1, 48_000, N,
+        )));
         g.link((rsrc, 0), (gain, 0)).unwrap();
         g.link((gain, 0), (rsink, 0)).unwrap();
         g.compile(GraphConfig::new(N, 48_000, 1)).unwrap();

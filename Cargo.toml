@@ -1,6 +1,6 @@
 [package]
 name = "audio-graph-bsd"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 license = "BSD-2-Clause"
 rust-version = "1.85"
@@ -19,12 +19,31 @@ rustdoc-args = ["--cfg", "docsrs"]
 audio-core-bsd = { version = "0.1.0", path = "../audio-core-bsd" }
 rtrb = "0.3"
 thiserror = "2.0"
+# serde is OPTIONAL: only pulled in by the `topology` feature. The default
+# (0.1.0-compatible) build stays serde-free (ROADMAP §10.1 minimal-dep policy).
+serde = { version = "1", optional = true, features = ["derive"] }
+# arc-swap is OPTIONAL: only pulled in by the `distributed` feature (hot-reload
+# atomic swap, Phase C). Verified RT-safe (wait-free load) before adoption.
+arc-swap = { version = "1.7", optional = true }
+
+[features]
+default = []
+## Track 1 (0.2.0): serializable topology model — `TopologySnapshot`,
+## `SnapshotEdge`, `TopologyEvent`, `Mutation`, plus the `SnapshotSource` /
+## `TopologyObserver` traits and the non-RT mutation API. Adds `serde`.
+topology = ["dep:serde"]
+## Track 2 (0.3.0): distributed-prep abstractions — `RemoteNode`, `PortKind`,
+## `PartitionHint`, `GraphPartition`, network-link node contract, and the
+## Phase-C hot-reload atomic swap. Builds on `topology` and adds `arc-swap`.
+distributed = ["topology", "dep:arc-swap"]
 
 [dev-dependencies]
 # Tests/examples/doctests name audio_core_bsd directly; it is also a regular dep.
 audio-core-bsd = { path = "../audio-core-bsd" }
 proptest = "1.11.0"
 criterion = "0.5"
+# bincode: G4 serde roundtrip test (TopologySnapshot <-> bytes equality).
+bincode = "1"
 
 [[bench]]
 name = "process_cycle_latency"

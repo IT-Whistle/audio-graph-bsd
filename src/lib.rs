@@ -115,6 +115,40 @@ mod graph;
 mod ring;
 mod topology;
 
+// The serializable topology model — only present under the `topology` feature.
+// When the feature is off the module, the serde dependency, and every type
+// below are entirely absent, preserving the 0.1.0 serde-free contract.
+#[cfg(feature = "topology")]
+mod topology_pub;
+
+// The distributed-prep abstractions — only present under the `distributed`
+// feature (which implies `topology`). Provides serializable partition models,
+// the network-link node contract, and the partition-hint generator. No sockets,
+// Raft, or netmap — those live in sonicbrew (M07/M09).
+#[cfg(feature = "distributed")]
+mod distributed;
+
+// Hot-reload handle (Phase C, ROADMAP §5 strategy B): atomic snapshot swap of a
+// compiled Graph via `arc-swap`. The control thread builds a new Graph and
+// publishes it; the RT thread does a wait-free load + alloc-free process_cycle.
+#[cfg(feature = "distributed")]
+mod hot_reload;
+
 pub use error::GraphError;
 pub use graph::{Graph, GraphConfig, LinkId, NodeId, PortIdx};
 pub use ring::{RingSink, RingSource};
+
+#[cfg(feature = "topology")]
+pub use topology_pub::{
+    Mutation, NodeSnapshot, PortDir, PortMeta, SampleFmt, SnapshotEdge, SnapshotSource,
+    TopologyEvent, TopologyObserver, TopologySnapshot,
+};
+
+#[cfg(feature = "distributed")]
+pub use distributed::{
+    BoundaryPort, GraphPartition, NetworkLinkNode, PartitionHint, PortKind, RemoteNode,
+    TransportHint,
+};
+
+#[cfg(feature = "distributed")]
+pub use hot_reload::RtHandle;

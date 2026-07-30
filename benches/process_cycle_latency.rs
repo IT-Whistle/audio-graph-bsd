@@ -12,7 +12,9 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use audio_core_bsd::{AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat};
+use audio_core_bsd::{
+    AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
+};
 use audio_graph_bsd::{Graph, GraphConfig};
 
 // ---------------------------------------------------------------------------
@@ -54,8 +56,16 @@ impl GainNode {
     fn new(gain: f32) -> Self {
         Self {
             gain,
-            in_p: [PortDescriptor::new(PortDirection::Input, 1, SampleFormat::F32)],
-            out_p: [PortDescriptor::new(PortDirection::Output, 1, SampleFormat::F32)],
+            in_p: [PortDescriptor::new(
+                PortDirection::Input,
+                1,
+                SampleFormat::F32,
+            )],
+            out_p: [PortDescriptor::new(
+                PortDirection::Output,
+                1,
+                SampleFormat::F32,
+            )],
         }
     }
 }
@@ -88,7 +98,11 @@ fn build_chain(nodes: usize, frames: usize) -> (Graph, usize) {
         prev = n;
     }
     g.compile(GraphConfig::new(frames, 48_000, 1)).unwrap();
-    g.feed(src, 0, &AudioFrame::from_planar(1, 48_000, vec![0.5; frames]));
+    g.feed(
+        src,
+        0,
+        &AudioFrame::from_planar(1, 48_000, vec![0.5; frames]),
+    );
     (g, prev)
 }
 
@@ -97,7 +111,7 @@ fn bench_process_cycle(c: &mut Criterion) {
 
     // 1-node trivial graph: pure engine overhead (topo walk + 1 process call).
     {
-        let (mut g, _) = build_chain(1, 256);
+        let (g, _) = build_chain(1, 256);
         let mut ctx = ProcessContext::new(256, 0, 48_000);
         group.bench_function("1_node_256f", |b| {
             b.iter(|| {
@@ -110,7 +124,7 @@ fn bench_process_cycle(c: &mut Criterion) {
 
     // 10-node chain at 256 frames: the M02 acceptance topology.
     {
-        let (mut g, _) = build_chain(10, 256);
+        let (g, _) = build_chain(10, 256);
         let mut ctx = ProcessContext::new(256, 0, 48_000);
         group.bench_function("10_node_chain_256f", |b| {
             b.iter(|| {
@@ -123,7 +137,7 @@ fn bench_process_cycle(c: &mut Criterion) {
 
     // 10-node chain at 1024 frames: larger block, amortised scheduling cost.
     {
-        let (mut g, _) = build_chain(10, 1024);
+        let (g, _) = build_chain(10, 1024);
         let mut ctx = ProcessContext::new(1024, 0, 48_000);
         group.bench_function("10_node_chain_1024f", |b| {
             b.iter(|| {

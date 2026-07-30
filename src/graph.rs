@@ -5,9 +5,25 @@
 //! used to shuttle audio between nodes on the real-time thread. The compile /
 //! build phases allocate freely; [`Graph::process_cycle`] does not.
 
+use std::cell::UnsafeCell;
+
 use crate::error::GraphError;
 use crate::topology::{topological_sort, Edge};
 use audio_core_bsd::{AudioFrame, AudioNode, PortDirection, ProcessContext};
+
+// The `topology` feature brings in the serializable snapshot model and the
+// subscriber channel used to emit TopologyEvent on the non-RT mutation path.
+#[cfg(feature = "topology")]
+use crate::topology_pub::{
+    NodeSnapshot, PortMeta, SnapshotEdge, SnapshotSource, TopologyEvent, TopologySnapshot,
+};
+
+// The `distributed` feature (which implies `topology`) brings in the
+// distributed-prep models used by `partition_hints` below.
+#[cfg(feature = "distributed")]
+use crate::distributed::{BoundaryPort, PartitionHint, PortKind, RemoteNode};
+#[cfg(feature = "distributed")]
+use crate::topology_pub::PortDir;
 
 /// Identifier of a node within a [`Graph`]. Stable for the lifetime of the graph.
 pub type NodeId = usize;
@@ -48,6 +64,36 @@ impl GraphConfig {
     }
 }
 
+/// The real-time-mutated state of a [`Graph`], held behind a single
+/// [`UnsafeCell`].
+///
+/// All three fields are touched on every [`Graph::process_cycle`]:
+/// `nodes` via [`AudioNode::process`](audio_core_bsd::AudioNode::process)
+/// (which takes `&mut self`), and the scratch frame vectors via the
+/// upstream-output copy. `nodes` lives here — rather than as a plain field
+/// — because calling `process(&mut self, …)` from a `&self` entry point is
+/// impossible without interior mutability; bundling it with the scratch
+/// vectors keeps the whole RT-mutated surface behind **one** cell.
+///
+/// # Soundness
+///
+/// The [`UnsafeCell`] wrapping this struct is sound because the real-time
+/// thread is the *sole* mutator during processing, and the caller guarantees
+/// that no `process_cycle` / `compile` / `feed` runs concurrently on the same
+/// [`Graph`] (single-RT-thread invariant). Every `&mut self` build/compile
+/// method uses the safe [`UnsafeCell::get_mut`] accessor; only
+/// [`Graph::process_cycle`] (`&self`) and the read-only `&self` accessors
+/// (`read_output`, `read_input`, `node_count`, …) use the `unsafe`
+/// dereference, each annotated with a `# Safety` rationale.
+struct GraphScratch {
+    /// The nodes, indexed by [`NodeId`].
+    nodes: Vec<Box<dyn AudioNode>>,
+    /// Per-node, per-input-port scratch frame. Indexed `[node][port]`.
+    input_scratch: Vec<Vec<AudioFrame>>,
+    /// Per-node, per-output-port scratch frame. Indexed `[node][port]`.
+    output_scratch: Vec<Vec<AudioFrame>>,
+}
+
 /// A real-time-safe directed acyclic graph of audio nodes.
 ///
 /// A `Graph` moves through three phases:
@@ -63,8 +109,6 @@ impl GraphConfig {
 ///
 /// See the crate-level documentation for the real-time safety contract.
 pub struct Graph {
-    /// The nodes, indexed by [`NodeId`].
-    nodes: Vec<Box<dyn AudioNode>>,
     /// The directed edges (output-port -> input-port).
     edges: Vec<Edge>,
     /// Node execution order, filled by [`Graph::compile`].
@@ -73,10 +117,17 @@ pub struct Graph {
     config: GraphConfig,
     /// Whether [`Graph::compile`] has run.
     compiled: bool,
-    /// Per-node, per-input-port scratch frame. Indexed `[node][port]`.
-    input_scratch: Vec<Vec<AudioFrame>>,
-    /// Per-node, per-output-port scratch frame. Indexed `[node][port]`.
-    output_scratch: Vec<Vec<AudioFrame>>,
+    /// RT scratch + nodes, accessed via `&self` on the single RT thread.
+    ///
+    /// [`UnsafeCell`] + the single-RT-thread invariant makes `&self`-based
+    /// `process_cycle` sound; the cell is never shared across threads for
+    /// mutation. See `GraphScratch` for the soundness argument.
+    scratch: UnsafeCell<GraphScratch>,
+    /// Subscribers notified of topology events on the non-RT mutation path.
+    /// Absent entirely without the `topology` feature (no dependency on
+    /// `mpsc` or `TopologyEvent` in the default build).
+    #[cfg(feature = "topology")]
+    subscribers: Vec<std::sync::mpsc::Sender<TopologyEvent>>,
 }
 
 impl Graph {
@@ -84,13 +135,17 @@ impl Graph {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            nodes: Vec::new(),
             edges: Vec::new(),
             execution_order: Vec::new(),
             config: GraphConfig::new(0, 0, 0),
             compiled: false,
-            input_scratch: Vec::new(),
-            output_scratch: Vec::new(),
+            scratch: UnsafeCell::new(GraphScratch {
+                nodes: Vec::new(),
+                input_scratch: Vec::new(),
+                output_scratch: Vec::new(),
+            }),
+            #[cfg(feature = "topology")]
+            subscribers: Vec::new(),
         }
     }
 
@@ -101,12 +156,16 @@ impl Graph {
     /// ports are allocated later in [`Graph::compile`].
     #[must_use]
     pub fn add_node(&mut self, node: Box<dyn AudioNode>) -> NodeId {
-        let id = self.nodes.len();
-        self.nodes.push(node);
+        let scratch = self.scratch.get_mut();
+        let id = scratch.nodes.len();
+        scratch.nodes.push(node);
         // Keep the scratch index aligned with the node id; the actual per-port
         // frames are allocated in compile().
-        self.input_scratch.push(Vec::new());
-        self.output_scratch.push(Vec::new());
+        scratch.input_scratch.push(Vec::new());
+        scratch.output_scratch.push(Vec::new());
+        // Notify topology subscribers (non-RT; no-op without the feature).
+        #[cfg(feature = "topology")]
+        self.emit_node_added(id);
         id
     }
 
@@ -135,11 +194,12 @@ impl Graph {
         // Validate ports and directions without holding mutable borrows across
         // the later edges.push().
         let (from_desc, to_desc) = {
-            let from_n = self
+            let scratch = self.scratch.get_mut();
+            let from_n = scratch
                 .nodes
                 .get(from_node)
                 .ok_or(GraphError::NodeNotFound(from_node))?;
-            let to_n = self
+            let to_n = scratch
                 .nodes
                 .get(to_node)
                 .ok_or(GraphError::NodeNotFound(to_node))?;
@@ -169,6 +229,9 @@ impl Graph {
 
         let link_id = self.edges.len();
         self.edges.push(Edge { from, to });
+        // Notify topology subscribers (non-RT; no-op without the feature).
+        #[cfg(feature = "topology")]
+        self.emit_event(&TopologyEvent::LinkAdded(SnapshotEdge { from, to }));
         Ok(link_id)
     }
 
@@ -186,16 +249,17 @@ impl Graph {
         if self.compiled {
             return Err(GraphError::AlreadyCompiled);
         }
-        let order = topological_sort(self.nodes.len(), &self.edges)
+        let order = topological_sort(self.scratch.get_mut().nodes.len(), &self.edges)
             .map_err(|remaining| GraphError::CycleDetected { nodes: remaining })?;
         self.execution_order = order;
         self.config = config;
 
         // Pre-allocate every per-port scratch frame so process_cycle never
         // allocates. This is the ONLY place allocation is permitted.
-        self.input_scratch = Vec::with_capacity(self.nodes.len());
-        self.output_scratch = Vec::with_capacity(self.nodes.len());
-        for node in &self.nodes {
+        let scratch = self.scratch.get_mut();
+        scratch.input_scratch = Vec::with_capacity(scratch.nodes.len());
+        scratch.output_scratch = Vec::with_capacity(scratch.nodes.len());
+        for node in &scratch.nodes {
             let in_slots: Vec<AudioFrame> = node
                 .inputs()
                 .iter()
@@ -210,10 +274,13 @@ impl Graph {
                     AudioFrame::silence(config.channels, config.num_frames, config.sample_rate)
                 })
                 .collect();
-            self.input_scratch.push(in_slots);
-            self.output_scratch.push(out_slots);
+            scratch.input_scratch.push(in_slots);
+            scratch.output_scratch.push(out_slots);
         }
         self.compiled = true;
+        // Notify topology subscribers that the graph is now compiled (non-RT).
+        #[cfg(feature = "topology")]
+        self.emit_event(&TopologyEvent::GraphCompiled);
         Ok(())
     }
 
@@ -226,6 +293,17 @@ impl Graph {
     /// and allocation-free: every slice is pre-sized by [`Graph::compile`] and
     /// only bounded `for` loops / slice copies are used.
     ///
+    /// # Safety (caller invariant)
+    ///
+    /// This method takes `&self` (not `&mut self`) so it can be called on a
+    /// [`Graph`] loaded from a shared handle such as `ArcSwap<Graph>`. The
+    /// interior mutability of the scratch cell is sound **only** because the
+    /// caller guarantees the real-time thread is single and exclusive — no
+    /// other `process_cycle`, `compile`, `feed`, or `read_*` may run
+    /// concurrently on the same [`Graph`]. In practice the control thread
+    /// builds and compiles a *new* `Graph` before swapping it in, so the old
+    /// instance being processed is never touched from another thread.
+    ///
     /// # Real-time safety
     ///
     /// This method performs **no** allocation, locking, panicking, or system
@@ -237,31 +315,30 @@ impl Graph {
     ///
     /// Returns [`GraphError::NotCompiled`] if [`Graph::compile`] has not been
     /// called.
-    pub fn process_cycle(&mut self, ctx: &mut ProcessContext) -> Result<(), GraphError> {
+    pub fn process_cycle(&self, ctx: &mut ProcessContext) -> Result<(), GraphError> {
         if !self.compiled {
             return Err(GraphError::NotCompiled);
         }
 
-        // Split the &mut self borrow into disjoint field borrows so the borrow
-        // checker allows reading output_scratch while writing input_scratch and
-        // invoking nodes[i] in the same loop.
-        let Graph {
+        // SAFETY: the caller guarantees no concurrent access to this Graph's
+        // scratch — see the method-level "# Safety" note. The mutable borrow
+        // below is exclusive on the single RT thread and never overlaps a
+        // `&mut self` build/compile call (the borrow checker forbids `&self`
+        // and `&mut self` from coexisting on the same Graph).
+        let GraphScratch {
             nodes,
-            edges,
-            execution_order,
             input_scratch,
             output_scratch,
-            ..
-        } = self;
+        } = unsafe { &mut *self.scratch.get() };
 
-        for &n in execution_order.iter() {
+        for &n in &self.execution_order {
             // (a) Fill this node's input slots from upstream outputs, or zero them.
             let Some(in_slots) = input_scratch.get_mut(n) else {
                 continue;
             };
             for (pi, slot) in in_slots.iter_mut().enumerate() {
                 let mut sourced = false;
-                for edge in edges.iter() {
+                for edge in &self.edges {
                     if edge.to == (n, pi) {
                         let (src, src_port) = edge.from;
                         if let Some(src_slots) = output_scratch.get(src) {
@@ -306,7 +383,7 @@ impl Graph {
     /// calling [`Graph::process_cycle`]. Out-of-range node/port is a silent
     /// no-op (never panics).
     pub fn feed(&mut self, node: NodeId, port: PortIdx, src: &AudioFrame) {
-        if let Some(slots) = self.output_scratch.get_mut(node) {
+        if let Some(slots) = self.scratch.get_mut().output_scratch.get_mut(node) {
             if let Some(dst) = slots.get_mut(port) {
                 dst.channels = src.channels;
                 dst.sample_rate = src.sample_rate;
@@ -321,7 +398,10 @@ impl Graph {
     /// Returns `None` if the node or port is out of range — never panics.
     #[must_use]
     pub fn read_output(&self, node: NodeId, port: PortIdx) -> Option<&AudioFrame> {
-        self.output_scratch.get(node).and_then(|s| s.get(port))
+        // SAFETY: read-only shared borrow; sound under the single-RT-thread
+        // invariant (never overlaps a mutable scratch access on this Graph).
+        let scratch = unsafe { &*self.scratch.get() };
+        scratch.output_scratch.get(node).and_then(|s| s.get(port))
     }
 
     /// Borrows the input frame that reached a node after a cycle.
@@ -330,13 +410,18 @@ impl Graph {
     /// its input slot. Returns `None` if the node or port is out of range.
     #[must_use]
     pub fn read_input(&self, node: NodeId, port: PortIdx) -> Option<&AudioFrame> {
-        self.input_scratch.get(node).and_then(|s| s.get(port))
+        // SAFETY: read-only shared borrow; sound under the single-RT-thread
+        // invariant (never overlaps a mutable scratch access on this Graph).
+        let scratch = unsafe { &*self.scratch.get() };
+        scratch.input_scratch.get(node).and_then(|s| s.get(port))
     }
 
     /// Returns the number of nodes in the graph.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.nodes.len()
+        // SAFETY: read-only shared borrow; sound under the single-RT-thread
+        // invariant (never overlaps a mutable scratch access on this Graph).
+        unsafe { &*self.scratch.get() }.nodes.len()
     }
 
     /// Returns the number of links in the graph.
@@ -363,6 +448,247 @@ impl Graph {
 impl Default for Graph {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// SAFETY: `Graph` contains an `UnsafeCell<GraphScratch>` (interior mutability for
+// the `&self` RT entry point), which makes it `!Sync` by default. However, a
+// `Graph` is sound to SHARE across threads (e.g. inside an `ArcSwap<Graph>` for
+// hot-reload) under the single-RT-thread invariant documented on
+// `GraphScratch`: only the dedicated RT thread ever mutates a given graph
+// instance's scratch (via `process_cycle`), and the control thread only ever
+// builds/compiles a NEW instance before publishing it. No two threads ever
+// access the SAME `Graph` instance's scratch concurrently. The `arc-swap`
+// handle provides the atomic pointer swap; this impl lets the `Arc<Graph>` be
+// `Send + Sync` so it can cross the control→RT thread boundary.
+unsafe impl Sync for Graph {}
+
+// =====================================================================================
+// `topology` feature: serializable snapshot model + non-RT mutation/observer API.
+//
+// Everything in this section is `#[cfg(feature = "topology")]`. The default
+// (0.1.0-compatible) build compiles none of it and stays serde-free.
+//
+// RT-safety (G3): `process_cycle` now takes `&self` (Phase-C prep), so the
+// topology snapshot read and `process_cycle` are *both* `&self` and the borrow
+// checker no longer forbids them from coexisting. RT/non-RT separation is
+// therefore a **runtime** contract — the single-RT-thread invariant on
+// `GraphScratch` — rather than a compile-time one. In the arc-swap hot-reload
+// model the control thread only ever builds/reads a *new* `Graph` while the RT
+// thread processes the *old* one, so they never touch the same instance.
+// =====================================================================================
+#[cfg(feature = "topology")]
+impl SnapshotSource for Graph {
+    fn topology_snapshot(&self) -> TopologySnapshot {
+        // SAFETY: read-only shared borrow; sound under the single-RT-thread
+        // invariant (never overlaps a mutable scratch access on this Graph).
+        let scratch = unsafe { &*self.scratch.get() };
+        let nodes = scratch
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(id, n)| NodeSnapshot {
+                id,
+                inputs: n
+                    .inputs()
+                    .iter()
+                    .map(|d| PortMeta::from_descriptor(*d))
+                    .collect(),
+                outputs: n
+                    .outputs()
+                    .iter()
+                    .map(|d| PortMeta::from_descriptor(*d))
+                    .collect(),
+            })
+            .collect();
+        let edges = self
+            .edges
+            .iter()
+            .map(|e| SnapshotEdge {
+                from: e.from,
+                to: e.to,
+            })
+            .collect();
+        TopologySnapshot { nodes, edges }
+    }
+}
+
+#[cfg(feature = "topology")]
+impl Graph {
+    /// Builds a NEW [`Graph`] from a [`TopologySnapshot`] plus a node factory.
+    ///
+    /// This is a **non-RT, control-thread** operation. For each
+    /// [`NodeSnapshot`] the `factory` is asked to supply a concrete
+    /// `Box<dyn AudioNode>` for that node's id; the snapshot's port metadata is
+    /// informational (the real node's ports, as reported by its
+    /// `inputs()` / `outputs()`, are what `link` validates against). Edges are
+    /// re-linked by remapping each snapshot [`NodeId`] to its new id in the
+    /// rebuilt graph.
+    ///
+    /// The returned graph is **not compiled** — the caller compiles it with
+    /// their own [`GraphConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::NodeNotFound`] if the factory returns `None` for a
+    /// node the snapshot requires, or if an edge references a node id the
+    /// factory did not supply. Returns the underlying [`GraphError`] from
+    /// [`Graph::link`] if a rebuilt edge fails port validation.
+    pub fn from_snapshot(
+        snapshot: &TopologySnapshot,
+        factory: &mut dyn FnMut(NodeId) -> Option<Box<dyn AudioNode>>,
+    ) -> Result<Graph, GraphError> {
+        let mut g = Graph::new();
+        // Snapshot ids may be non-contiguous (e.g. after RemoveNode), so remap
+        // each snapshot id to the new graph's contiguous id space.
+        let mut id_map = std::collections::HashMap::<NodeId, NodeId>::new();
+        for ns in &snapshot.nodes {
+            let node = factory(ns.id).ok_or(GraphError::NodeNotFound(ns.id))?;
+            let new_id = g.add_node(node);
+            id_map.insert(ns.id, new_id);
+        }
+        for se in &snapshot.edges {
+            let new_from = id_map
+                .get(&se.from.0)
+                .copied()
+                .ok_or(GraphError::NodeNotFound(se.from.0))?;
+            let new_to = id_map
+                .get(&se.to.0)
+                .copied()
+                .ok_or(GraphError::NodeNotFound(se.to.0))?;
+            g.link((new_from, se.from.1), (new_to, se.to.1))?;
+        }
+        Ok(g)
+    }
+
+    /// Subscribes to topology events via a `std::sync::mpsc` channel (non-RT).
+    ///
+    /// Returns a [`Receiver`](std::sync::mpsc::Receiver) that receives a
+    /// [`TopologyEvent`] whenever the graph mutates on the control thread (a
+    /// node is added/removed or a link is added/removed). The RT
+    /// [`Graph::process_cycle`](crate::Graph::process_cycle) path **never**
+    /// emits events.
+    ///
+    /// Senders whose receivers have been dropped are pruned automatically on
+    /// the next emission.
+    ///
+    /// # Real-time safety (G3)
+    ///
+    /// Subscription is a control-thread mutation of the subscriber set, so it
+    /// takes `&mut self` — an exclusive borrow. `process_cycle` is now `&self`
+    /// (Phase-C prep), so this `&mut self` is the stronger constraint: it is
+    /// statically impossible to hold the `&mut self` needed to subscribe *while*
+    /// a `&self` `process_cycle` borrow is live on the same binding. Combined
+    /// with the single-RT-thread invariant on `GraphScratch`, the RT path is
+    /// never disrupted by a concurrent subscription on the same `Graph`.
+    #[must_use]
+    pub fn subscribe_topology(&mut self) -> std::sync::mpsc::Receiver<TopologyEvent> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.subscribers.push(tx);
+        rx
+    }
+
+    /// Emits a topology event to every live subscriber, pruning dead senders.
+    ///
+    /// Emits a topology event to every live subscriber, pruning dead senders.
+    ///
+    /// Non-RT: called only from the control-thread mutation path
+    /// (`add_node` / `link`).
+    fn emit_event(&mut self, event: &TopologyEvent) {
+        self.subscribers.retain(|tx| tx.send(event.clone()).is_ok());
+    }
+
+    /// Builds and emits a `NodeAdded` event for the node at `id`.
+    fn emit_node_added(&mut self, id: NodeId) {
+        let snapshot = {
+            let n = self
+                .scratch
+                .get_mut()
+                .nodes
+                .get(id)
+                .expect("emit_node_added called with a just-assigned NodeId");
+            NodeSnapshot {
+                id,
+                inputs: n
+                    .inputs()
+                    .iter()
+                    .map(|d| PortMeta::from_descriptor(*d))
+                    .collect(),
+                outputs: n
+                    .outputs()
+                    .iter()
+                    .map(|d| PortMeta::from_descriptor(*d))
+                    .collect(),
+            }
+        };
+        self.emit_event(&TopologyEvent::NodeAdded(snapshot));
+    }
+}
+
+// =====================================================================================
+// `distributed` feature: partition-hint derivation.
+//
+// The crate provides abstractions + hints only (no sockets/Raft/netmap). This
+// generator runs on the control thread and never touches the RT path.
+// =====================================================================================
+#[cfg(feature = "distributed")]
+impl Graph {
+    /// Derives partition hints from a set of `(node, port, remote)` boundary
+    /// declarations.
+    ///
+    /// Every node present in this graph is treated as a local node (the graph
+    /// *is* the local partition). Each declared port becomes a
+    /// [`BoundaryPort`](crate::BoundaryPort) with
+    /// [`PortKind::Network`](crate::PortKind::Network). The port's direction is
+    /// resolved from the node's own port descriptors: **output ports are
+    /// checked first**, so a port index valid on both sides is treated as an
+    /// output. A declaration whose port is out of range on both sides is
+    /// skipped (the method never panics).
+    ///
+    /// This is a **hint generator** — sonicbrew's session-store (M07) decides
+    /// the actual partitioning. Exactly one [`PartitionHint`] is returned,
+    /// describing this single local partition.
+    #[must_use]
+    pub fn partition_hints(
+        &self,
+        boundaries: &[(NodeId, PortIdx, RemoteNode)],
+    ) -> Vec<PartitionHint> {
+        // Every node in this graph runs locally.
+        let local_nodes: Vec<NodeId> = (0..self.node_count()).collect();
+        let boundary_ports: Vec<BoundaryPort> = boundaries
+            .iter()
+            .filter_map(|(node, port, remote)| {
+                let direction = self.boundary_port_direction(*node, *port)?;
+                Some(BoundaryPort {
+                    node: *node,
+                    port: *port,
+                    kind: PortKind::Network {
+                        remote: remote.clone(),
+                    },
+                    direction,
+                })
+            })
+            .collect();
+        vec![PartitionHint {
+            local_nodes,
+            boundary_ports,
+        }]
+    }
+
+    /// Resolves the [`PortDir`](crate::PortDir) of `(node, port)` by checking
+    /// the node's output ports first, then inputs. Returns `None` if the port
+    /// index is out of range on both sides.
+    fn boundary_port_direction(&self, node: NodeId, port: PortIdx) -> Option<PortDir> {
+        // SAFETY: read-only shared borrow; sound under the single-RT-thread
+        // invariant (never overlaps a mutable scratch access on this Graph).
+        let n = unsafe { &*self.scratch.get() }.nodes.get(node)?;
+        if port < n.outputs().len() {
+            Some(PortDir::Output)
+        } else if port < n.inputs().len() {
+            Some(PortDir::Input)
+        } else {
+            None
+        }
     }
 }
 
@@ -530,7 +856,7 @@ mod tests {
 
     #[test]
     fn process_before_compile_errors() {
-        let mut g = Graph::new();
+        let g = Graph::new();
         let mut ctx = ProcessContext::new(64, 0, 48_000);
         assert_eq!(g.process_cycle(&mut ctx), Err(GraphError::NotCompiled));
     }
