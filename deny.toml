@@ -1,0 +1,69 @@
+# cargo-deny 설정 — audio-toolkit (9 standalone 크레이트 공유)
+#
+# 사용 (각 크레이트별, audio-toolkit/ 루트에서):
+#   cargo deny check --manifest-path audio-core-bsd/Cargo.toml --config deny.toml
+#   cargo deny check --manifest-path audio-io-bsd/Cargo.toml    --config deny.toml --all-features
+#   ... (CI/Makefile에서 각 크레이트 순회)
+#
+# 프로젝트 라이선스: BSD-2-Clause. 강카피레프트(GPL/AGPL) 차단, 약카피레프트(MPL/LGPL)는
+# 호환 범위에서 허용하되 copyleft="warn"으로 검토 대상 표시.
+
+[graph]
+all-features = true
+
+[licenses]
+# 허용 라이선스 (BSD-2-Clause 프로젝트와 호환)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Unlicense",   # public domain — pdfork(audio-plugin-bsd). BSD-2보다 관대(저작권 전체 포기).
+    "MPL-2.0",        # 약카피레프트(파일단위) — symphonia, capsicum. 링크 호환, 수정 금지.
+    "LGPL-2.1",       # 동적 링크 호환 — alsa-lib(cpal 경유, audio-io cpal-backend feature). 시스템 공유라이브러리 동적 링크 전제.
+]
+# 강카피레프트/비허가: 자동 차단
+deny = [
+    "GPL-2.0",
+    "GPL-2.0+",
+    "GPL-3.0",
+    "GPL-3.0+",
+    "AGPL-1.0",
+    "AGPL-3.0",
+    "CC0-1.0",        # 표기만 CC0인 경우 주의
+]
+# copyleft(MPL/LGPL 등) 발견 시 warn (허용하되 검토 유도)
+copyleft = "warn"
+confidence-threshold = 0.8
+# 라이선스 필드 누락 의존성은 fail
+unlicensed = "deny"
+
+[licenses.exceptions]
+# 필요 시 특정 크레이트 예외 (현재 없음)
+
+[[licenses.clarify]]
+# pdfork — 라이선스 명확화 필요시 여기에 (확인 후 기재)
+# 예: name = "pdfork"; 버전/라이선스 확정 후 expression 지정
+
+[advisories]
+# 알려진 취약점(cargo audit DB) 차단
+db-urls = ["https://github.com/RustSec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+
+[bans]
+# 같은 크레이트 중복 버전 warn
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# crates.io 외 출처 허용 여부
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

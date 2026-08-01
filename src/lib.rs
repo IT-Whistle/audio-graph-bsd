@@ -111,6 +111,7 @@
 #![warn(clippy::all, clippy::pedantic)]
 
 mod error;
+mod flush;
 mod graph;
 mod ring;
 mod topology;
@@ -135,6 +136,7 @@ mod distributed;
 mod hot_reload;
 
 pub use error::GraphError;
+pub use flush::{FlushError, Flushable, SinkNode};
 pub use graph::{Graph, GraphConfig, LinkId, NodeId, PortIdx};
 pub use ring::{RingSink, RingSource};
 

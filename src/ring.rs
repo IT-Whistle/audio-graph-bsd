@@ -185,6 +185,21 @@ impl RingSink {
     }
 }
 
+impl crate::Flushable for RingSink {
+    /// Pushes the stashed frame into the ring (OFF-RT ONLY — clones/allocates).
+    ///
+    /// This is the [`Flushable`](crate::Flushable) contract the graph engine
+    /// calls in the between-cycle window via
+    /// [`Graph::flush_sinks`](crate::Graph::flush_sinks). It is equivalent to
+    /// the inherent [`RingSink::flush`] but returns the graph-level
+    /// [`FlushError`](crate::FlushError).
+    fn flush(&mut self) -> Result<(), crate::FlushError> {
+        self.producer
+            .push(self.stash.clone())
+            .map_err(|_| crate::FlushError::RingFull(1))
+    }
+}
+
 impl AudioNode for RingSink {
     fn inputs(&self) -> &[PortDescriptor] {
         &self.in_port

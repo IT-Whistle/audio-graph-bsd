@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-01
+### Added — flush-gap (engine-changes §4, Option A)
+- `Flushable` trait + `FlushError` enum (`src/flush.rs`): the contract a sink node fulfills to drain its stashed frame off the RT thread.
+- `SinkNode` trait (`AudioNode + Flushable`, blanket-impl) so the engine tracks flushable sinks by type — no `Any` downcast.
+- `impl Flushable for RingSink` (OFF-RT clone+push, maps `rtrb::PushError` → `FlushError::RingFull`).
+- `Graph::add_sink(Box<dyn SinkNode>) -> NodeId`: registers a flushable sink (internal `NodeSlot` enum: `Plain` / `Sink`).
+- `Graph::flush_sinks(&mut self) -> (usize, Option<FlushError>)`: drains every sink between cycles (off-RT). First error reported, remaining sinks still flushed.
+- `Graph::flush_sink(&mut self, NodeId) -> Result<(), FlushError>`: targeted flush; returns `NotFlushable` for plain nodes, `NodeNotFound` for missing ids.
+- Integration tests (`tests/flush_sinks.rs`): stash→consumer round-trip, ring-full reporting, plain/missing-node rejection, targeted flush.
+- Resolves the outbound audio gap blocking sonicbrew M09/M10/M12 (graph → client shipping).
+
+### Changed
+- `Graph` internal node storage is now `Vec<NodeSlot>` (enum) instead of `Vec<Box<dyn AudioNode>>`. `NodeSlot` implements `AudioNode` by delegation, so `add_node` / `process_cycle` / `link` / `compile` / `read_*` / topology / partition APIs are unchanged. Existing `add_node(Box<dyn AudioNode>)` API is fully preserved.
+
 ## [0.3.0] - 2026-07-30
 ### Added — Track 1 (topology API, `topology` feature)
 - `TopologySnapshot` serializable topology model (nodes + edges + port metadata), `serde`-derived.
@@ -42,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RingSource` / `RingSink` rtrb-backed bridge nodes for worker-thread I/O.
 - Comprehensive test suite: unit, property (proptest), integration, RT-safety (alloc-free over 1000 cycles), and concurrency.
 
-[Unreleased]: https://github.com/IT-Whistle/audio-graph-bsd/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/IT-Whistle/audio-graph-bsd/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.3.0
 [0.1.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.1.0

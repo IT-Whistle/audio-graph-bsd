@@ -8,6 +8,7 @@
 use std::cell::UnsafeCell;
 
 use crate::error::GraphError;
+use crate::flush::{FlushError, SinkNode};
 use crate::topology::{topological_sort, Edge};
 use audio_core_bsd::{AudioFrame, AudioNode, PortDirection, ProcessContext};
 
@@ -85,9 +86,44 @@ impl GraphConfig {
 /// [`Graph::process_cycle`] (`&self`) and the read-only `&self` accessors
 /// (`read_output`, `read_input`, `node_count`, …) use the `unsafe`
 /// dereference, each annotated with a `# Safety` rationale.
+/// Internal node storage: either a plain node or a flushable sink node.
+///
+/// Wrapping nodes in this enum lets the engine track which nodes are
+/// flushable without `Any` downcast — sink nodes are registered via
+/// [`Graph::add_sink`] and stored as [`NodeSlot::Sink`]. Both variants
+/// implement [`AudioNode`] (delegating to the inner node), so the rest of the
+/// engine treats a `Vec<NodeSlot>` exactly like a `Vec<Box<dyn AudioNode>>`.
+enum NodeSlot {
+    /// A plain (non-flushable) node.
+    Plain(Box<dyn AudioNode>),
+    /// A flushable sink node (a `dyn SinkNode` = `AudioNode + Flushable`).
+    Sink(Box<dyn SinkNode>),
+}
+
+impl AudioNode for NodeSlot {
+    fn inputs(&self) -> &[audio_core_bsd::PortDescriptor] {
+        match self {
+            Self::Plain(n) => n.inputs(),
+            Self::Sink(n) => n.inputs(),
+        }
+    }
+    fn outputs(&self) -> &[audio_core_bsd::PortDescriptor] {
+        match self {
+            Self::Plain(n) => n.outputs(),
+            Self::Sink(n) => n.outputs(),
+        }
+    }
+    fn process(&mut self, ctx: &mut ProcessContext, i: &[AudioFrame], o: &mut [AudioFrame]) {
+        match self {
+            Self::Plain(n) => n.process(ctx, i, o),
+            Self::Sink(n) => n.process(ctx, i, o),
+        }
+    }
+}
+
 struct GraphScratch {
     /// The nodes, indexed by [`NodeId`].
-    nodes: Vec<Box<dyn AudioNode>>,
+    nodes: Vec<NodeSlot>,
     /// Per-node, per-input-port scratch frame. Indexed `[node][port]`.
     input_scratch: Vec<Vec<AudioFrame>>,
     /// Per-node, per-output-port scratch frame. Indexed `[node][port]`.
@@ -158,9 +194,31 @@ impl Graph {
     pub fn add_node(&mut self, node: Box<dyn AudioNode>) -> NodeId {
         let scratch = self.scratch.get_mut();
         let id = scratch.nodes.len();
-        scratch.nodes.push(node);
+        scratch.nodes.push(NodeSlot::Plain(node));
         // Keep the scratch index aligned with the node id; the actual per-port
         // frames are allocated in compile().
+        scratch.input_scratch.push(Vec::new());
+        scratch.output_scratch.push(Vec::new());
+        // Notify topology subscribers (non-RT; no-op without the feature).
+        #[cfg(feature = "topology")]
+        self.emit_node_added(id);
+        id
+    }
+
+    /// Adds a flushable sink node and returns its stable [`NodeId`].
+    ///
+    /// Identical to [`Graph::add_node`] but registers the node as a flushable
+    /// sink, so the engine can drain it between cycles via
+    /// [`Graph::flush_sinks`] / [`Graph::flush_sink`]. Use this for
+    /// [`RingSink`](crate::RingSink) (and any custom sink node implementing
+    /// [`SinkNode`]).
+    ///
+    /// A node added via `add_node` is **not** flushable — `flush_sink` on it
+    /// returns [`FlushError::NotFlushable`].
+    pub fn add_sink(&mut self, sink: Box<dyn SinkNode>) -> NodeId {
+        let scratch = self.scratch.get_mut();
+        let id = scratch.nodes.len();
+        scratch.nodes.push(NodeSlot::Sink(sink));
         scratch.input_scratch.push(Vec::new());
         scratch.output_scratch.push(Vec::new());
         // Notify topology subscribers (non-RT; no-op without the feature).
@@ -390,6 +448,55 @@ impl Graph {
                 let copy_len = src.samples.len().min(dst.samples.len());
                 dst.samples[..copy_len].copy_from_slice(&src.samples[..copy_len]);
             }
+        }
+    }
+
+    /// Flushes every flushable sink node. Call BETWEEN cycles, never on the RT
+    /// thread (`flush` allocates).
+    ///
+    /// Iterates every node added via [`Graph::add_sink`] and pushes its stashed
+    /// frame across its ring. Returns the count of sinks flushed and the first
+    /// error encountered (if any); remaining sinks are still flushed after an
+    /// error so a single full ring does not block the rest.
+    ///
+    /// This is the engine-changes §4 (Option A) bridge that lets sonicbrew ship
+    /// outbound audio (graph → client) off the RT thread.
+    ///
+    /// # Real-time safety
+    ///
+    /// **OFF-RT ONLY.** `flush` clones the stashed frame and pushes it through
+    /// an `rtrb::Producer` (allocating). It must run in the between-cycle window
+    /// on the same thread that owns the graph, never inside `process_cycle`.
+    pub fn flush_sinks(&mut self) -> (usize, Option<FlushError>) {
+        let scratch = self.scratch.get_mut();
+        let mut count = 0;
+        let mut first_err = None;
+        for slot in &mut scratch.nodes {
+            if let NodeSlot::Sink(sink) = slot {
+                count += 1;
+                if let Err(e) = sink.flush() {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+        }
+        (count, first_err)
+    }
+
+    /// Flushes a single sink node by id (between cycles, off-RT).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlushError::NotFlushable`] if the node was added via
+    /// [`Graph::add_node`] (not a sink), [`FlushError::NodeNotFound`] if the id
+    /// is out of range, or [`FlushError::RingFull`] if the sink's ring is full.
+    pub fn flush_sink(&mut self, node: NodeId) -> Result<(), FlushError> {
+        let scratch = self.scratch.get_mut();
+        match scratch.nodes.get_mut(node) {
+            Some(NodeSlot::Sink(sink)) => sink.flush(),
+            Some(NodeSlot::Plain(_)) => Err(FlushError::NotFlushable(node)),
+            None => Err(FlushError::NodeNotFound(node)),
         }
     }
 
