@@ -15,7 +15,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use audio_core_bsd::{
     AudioFrame, AudioNode, PortDescriptor, PortDirection, ProcessContext, SampleFormat,
 };
-use audio_graph_bsd::{Graph, GraphConfig};
+use audio_graph_bsd::{Graph, GraphConfig, RingSink, RingSource};
 
 // ---------------------------------------------------------------------------
 // Minimal test nodes (benches are a separate crate, same as integration tests).
@@ -106,6 +106,30 @@ fn build_chain(nodes: usize, frames: usize) -> (Graph, usize) {
     (g, prev)
 }
 
+/// Like `build_chain` but ends in a flushable `RingSink` (registered via
+/// `add_sink`) fed by a `RingSource`, so a benchmark can measure the
+/// `process_cycle` + between-cycle `flush_sinks` pattern (engine-changes §4.2).
+fn build_sink_chain(nodes: usize, frames: usize) -> (Graph, usize) {
+    let (mut prod_in, cons_in) = rtrb::RingBuffer::<AudioFrame>::new(64);
+    let (prod_out, _cons_out) = rtrb::RingBuffer::<AudioFrame>::new(4096);
+    let mut g = Graph::new();
+    let src = g.add_node(Box::new(RingSource::new(cons_in, 1, 48_000, frames)));
+    let mut prev = src;
+    for _ in 0..nodes {
+        let n = g.add_node(Box::new(GainNode::new(1.0)));
+        g.link((prev, 0), (n, 0)).unwrap();
+        prev = n;
+    }
+    let sink = g.add_sink(Box::new(RingSink::new(prod_out, 1, 48_000, frames)));
+    g.link((prev, 0), (sink, 0)).unwrap();
+    g.compile(GraphConfig::new(frames, 48_000, 1)).unwrap();
+    // Pre-fill the input ring so the source has data each cycle.
+    for _ in 0..16 {
+        let _ = prod_in.push(AudioFrame::from_planar(1, 48_000, vec![0.5; frames]));
+    }
+    (g, sink)
+}
+
 fn bench_process_cycle(c: &mut Criterion) {
     let mut group = c.benchmark_group("process_cycle");
 
@@ -144,6 +168,21 @@ fn bench_process_cycle(c: &mut Criterion) {
                 // `process_cycle` mutates the graph's scratch in place; its
                 // side effects prevent the optimiser from eliding the call.
                 g.process_cycle(&mut ctx).unwrap();
+            });
+        });
+    }
+
+    // 10-node chain ending in a flushable sink: cycle + between-cycle flush
+    // (measures the full engine-changes §4.2 RT-loop pattern, incl. the
+    // off-RT clone+push of flush_sinks). Regression guard for the NodeSlot
+    // delegate cost + flush overhead.
+    {
+        let (mut g, _sink) = build_sink_chain(10, 256);
+        let mut ctx = ProcessContext::new(256, 0, 48_000);
+        group.bench_function("10_node_with_sink_flush_256f", |b| {
+            b.iter(|| {
+                g.process_cycle(&mut ctx).unwrap();
+                let _ = g.flush_sinks();
             });
         });
     }

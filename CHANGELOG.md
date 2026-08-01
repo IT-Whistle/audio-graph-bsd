@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-01
+### Added — test hardening (heatmap 강도 충족, 기능 변화 없음)
+- `tests/rt_flush_regression.rs`: RT-safety 교차 회귀 게이트 — `process_cycle` + `flush_sinks` 교차 1000회 패턴에서 `process_cycle` 구간 alloc=0(thread-local CountingAllocator, MEASURING 윈도우가 process_cycle에만 스코프). flush가 RT 경로에 할당 누출시키지 않음 실증.
+- `tests/flush_property.rs`: proptest — 임의 신호 flush round-trip 비트 보존, 임의 ring capacity ring-full no-panic, plain 노드 NotFlushable (heatmap Property i4).
+- `benches/process_cycle_latency.rs`: `10_node_with_sink_flush_256f` 케이스 추가(cycle + between-cycle flush 지역, NodeSlot delegate 회귀 가드).
+- Miri UB-free 확장: `flush_sinks`(5) + `rt_flush_regression`(2) 통합 경래.
+- FreeBSD 네이티브 cargo test 통과(테스트노드 192.168.39.2 FreeBSD 15.1-RELEASE-p1, default ~66 + distributed ~91 passed).
+
 ## [0.4.0] - 2026-08-01
 ### Added — flush-gap (engine-changes §4, Option A)
 - `Flushable` trait + `FlushError` enum (`src/flush.rs`): the contract a sink node fulfills to drain its stashed frame off the RT thread.
@@ -56,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RingSource` / `RingSink` rtrb-backed bridge nodes for worker-thread I/O.
 - Comprehensive test suite: unit, property (proptest), integration, RT-safety (alloc-free over 1000 cycles), and concurrency.
 
-[Unreleased]: https://github.com/IT-Whistle/audio-graph-bsd/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/IT-Whistle/audio-graph-bsd/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.4.1
 [0.4.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.4.0
 [0.3.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.3.0
 [0.1.0]: https://github.com/IT-Whistle/audio-graph-bsd/releases/tag/v0.1.0
